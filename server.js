@@ -8,16 +8,6 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-const cors = require("cors");
-
-app.use(
-  cors({
-    origin: ["https://techscr.com", "https://www.techscr.com"],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "X-ADMIN-KEY"],
-  }),
-);
-
 // Serve frontend
 app.use(express.static(path.join(__dirname, "public")));
 
