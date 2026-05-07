@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Tech SCR — Specs Tool</title>
+    <!-- Website Icon / Favicon -->
+    <link rel="icon" type="image/png" href="/images/image.png">
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <div class="logo">
+                <img src="/images/image.png" alt="Tech SCR Logo" class="logoImg">
+            </div>
+            <div>
+                <div class="brandTitle">Tech SCR</div>
+                <div class="brandSub">Smartphone Specs Database</div>
+            </div>
+        </div>
+
+        <div class="topActions">
+            <input id="search" class="search" placeholder="Search phones (brand/model/SoC/IP)..." />
+            <button id="btnAdmin" class="btn secondary">Admin</button>
+            <button id="btnAdminOff" class="btn secondary hidden">Admin: ON (Disable)</button>
+        </div>
+    </header>
+
+    <main class="wrap">
+        <div class="layout">
+            <aside class="panel">
+                <div class="panelHeader">
+                    <div class="panelTitle">Phones</div>
+                    <div class="panelHint" id="countHint">—</div>
+                </div>
+                <div id="list" class="list"></div>
+            </aside>
+
+            <section class="panel">
+                <div class="panelHeader">
+                    <div>
+                        <div class="panelTitle" id="phoneTitle">Select a phone</div>
+                        <div class="panelHint" id="phoneMeta">—</div>
+                    </div>
+
+                    <!-- admin-only controls (hidden unless admin enabled) -->
+                    <div id="adminControls" class="adminControls hidden">
+                        <button id="btnCopyJson" class="btn">Copy JSON</button>
+                        <button id="btnCopyMd" class="btn">Copy Markdown</button>
+                        <button id="btnEdit" class="btn secondary">Edit</button>
+                        <button id="btnNew" class="btn secondary">New</button>
+                    </div>
+                </div>
+
+                <div id="detail" class="detail">
+                    <div class="empty">Pick a phone from the left.</div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <!-- modal -->
+    <div id="modal" class="modal hidden">
+        <div class="modalCard">
+            <div class="modalHeader">
+                <div class="modalTitle" id="modalTitle">Admin</div>
+                <button id="modalClose" class="btn secondary">Close</button>
+            </div>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        let phones = [];
+        let selected = null;
+
+        // admin key in-session only
+        let adminKey = sessionStorage.getItem("adminKey") || null;
+        const $ = (id) => document.getElementById(id);
+        const isAdmin = () => !!adminKey;
+
+        function setAdminUI() {
+            $("adminControls").classList.toggle("hidden", !isAdmin());
+            $("btnAdmin").classList.toggle("hidden", isAdmin());
+            $("btnAdminOff").classList.toggle("hidden", !isAdmin());
+        }
+
+        async function api(path, opts = {}) {
+            const headers = opts.headers || {};
+            if (adminKey) headers["X-ADMIN-KEY"] = adminKey;
+            if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+            const res = await fetch(path, { ...opts, headers });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || "Request failed");
+            return data;
+        }
+
+        async function loadPhones(q = "") {
+            const url = q ? `/api/phones?q=${encodeURIComponent(q)}&limit=500` : `/api/phones?limit=500`;
+            const data = await api(url);
+            phones = data.phones || [];
+            $("countHint").textContent = `${phones.length} phones`;
+            renderList();
+            if (selected) {
+                const still = phones.find(p => p.id === selected.id);
+                if (!still) selectPhone(null);
+            }
+        }
+
+        function minPrice(p) {
+            const prices = (p.variants || []).map(v => v.price_inr).filter(n => typeof n === "number");
+            return prices.length ? Math.min(...prices) : null;
+        }
+
+        function renderList() {
+            const list = $("list");
+            list.innerHTML = "";
+            phones.forEach(p => {
+                const item = document.createElement("button");
+                item.className = "listItem" + (selected?.id === p.id ? " active" : "");
+                const price = minPrice(p);
+                item.innerHTML = `
+          <div class="liTitle">${p.brand} ${p.model}</div>
+          <div class="liSub">${p.specs?.performance?.soc || "SoC unknown"} • ${price ? `From ₹${price.toLocaleString("en-IN")}` : "Price unknown"}</div>
+        `;
+                item.onclick = () => selectPhone(p);
+                list.appendChild(item);
+            });
+        }
+
+        function fmt(v) {
+            if (v === null || v === undefined || v === "") return "—";
+            if (typeof v === "boolean") return v ? "Yes" : "No";
+            return String(v);
+        }
+
+        function fmtAntutu(a) {
+            if (!a) return "—";
+            const toM = (n) => `Approximately ~${(n / 1_000_000).toFixed(2)}M`;
+            if (typeof a.approx_min === "number" && typeof a.approx_max === "number") return `${toM(a.approx_min)}–${toM(a.approx_max)}`;
+            if (typeof a.approx === "number") return toM(a.approx);
+            if (typeof a.approx_min === "number") return toM(a.approx_min);
+            if (typeof a.approx_max === "number") return toM(a.approx_max);
+            return "—";
+        }
+
+        function cameraToText(c) {
+            if (!c) return "—";
+            const parts = [];
+            if (typeof c.mp === "number") parts.push(`${c.mp}MP`);
+            if (c.sensor) parts.push(c.sensor);
+            if (c.ois === true) parts.push("OIS");
+            if (c.type) parts.push(c.type);
+            if (typeof c.optical_zoom_x === "number") parts.push(`${c.optical_zoom_x}x optical`);
+            return parts.join(" • ") || "—";
+        }
+
+        function group(title, rows) {
+            const tr = rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+            return `
+        <div class="group">
+          <div class="groupTitle">${title}</div>
+          <table class="tbl"><tbody>${tr}</tbody></table>
+        </div>
+      `;
+        }
+
+        function renderDetail(p) {
+            if (!p) {
+                $("detail").innerHTML = `<div class="empty">Pick a phone from the left.</div>`;
+                $("phoneTitle").textContent = "Select a phone";
+                $("phoneMeta").textContent = "—";
+                return;
+            }
+
+            const price = minPrice(p);
+            $("phoneTitle").textContent = `${p.brand} ${p.model}`;
+            $("phoneMeta").textContent =
+                `${p.specs?.performance?.soc || "SoC unknown"} • ${p.specs?.durability?.ip_rating || "IP ?"} • ${price ? `From ₹${price.toLocaleString("en-IN")}` : "Price unknown"}`;
+
+            const s = p.specs || {};
+            const variants = (p.variants || []).map(v => {
+                const pr = typeof v.price_inr === "number" ? `₹${v.price_inr.toLocaleString("en-IN")}` : "—";
+                return `<div class="variantCard">
+          <div class="variantTitle">${v.label || `${v.ram_gb}GB+${v.storage_gb}GB`}</div>
+          <div class="variantMeta">${fmt(v.ram_type)} • ${fmt(v.storage_type)}<br/>Price: <b>${pr}</b></div>
+        </div>`;
+            }).join("") || `<div class="muted">—</div>`;
+
+            const tests = (p.tests || []).map(t => {
+                const range = (typeof t.range_min === "number" || typeof t.range_max === "number")
+                    ? ` (range: ${fmt(t.range_min)}–${fmt(t.range_max)} ${fmt(t.unit)})` : "";
+                const temp = t.temp_c ? ` • Temp: Approximately ~${fmt(t.temp_c.approx_min)}–~${fmt(t.temp_c.approx_max)}°C` : "";
+                return `<li><b>${t.type}</b> — ${t.metric}: ${fmt(t.value)} ${fmt(t.unit)}${range}${t.settings ? ` • ${t.settings}` : ""}${temp}${t.source ? ` • Source: ${t.source}` : ""}</li>`;
+            }).join("") || `<li class="muted">—</li>`;
+
+            $("detail").innerHTML = `
+        <div class="section">
+          <div class="sectionTitle">Variants & Pricing</div>
+          <div class="variantsGrid">${variants}</div>
+        </div>
+
+        ${group("Display", [
+                ["Size", `${fmt(s.display?.size_in)}″`],
+                ["Type", fmt(s.display?.type)],
+                ["Resolution", fmt(s.display?.resolution_class)],
+                ["Refresh rate", `${fmt(s.display?.refresh_hz)} Hz`],
+                ["Peak brightness", s.display?.peak_brightness_nits ? `${s.display.peak_brightness_nits} nits` : "—"]
+            ])}
+
+        ${group("Performance", [
+                ["SoC", fmt(s.performance?.soc)],
+                ["AnTuTu", fmtAntutu(s.performance?.antutu)],
+                ["Cooling", fmt(s.performance?.cooling)]
+            ])}
+
+        ${group("Battery & Charging", [
+                ["Battery", s.battery?.capacity_mah ? `${s.battery.capacity_mah} mAh` : "—"],
+                ["Wired charging", s.battery?.wired_charging_w ? `${s.battery.wired_charging_w} W` : "—"],
+                ["Wireless charging", s.battery?.wireless_charging_w ? `${s.battery.wireless_charging_w} W` : "—"],
+                ["Reverse charging", s.battery?.reverse_charging_w ? `${s.battery.reverse_charging_w} W` : "—"],
+                ["Bypass charging", fmt(s.battery?.bypass_charging)]
+            ])}
+
+        ${group("Cameras (Structured)", [
+                ["Rear main", cameraToText(s.cameras?.rear?.main)],
+                ["Rear ultrawide", cameraToText(s.cameras?.rear?.ultrawide)],
+                ["Rear telephoto", cameraToText(s.cameras?.rear?.telephoto)],
+                ["Front", s.cameras?.front?.mp ? `${s.cameras.front.mp}MP` : "—"],
+                ["Rear video max", fmt(s.cameras?.video?.rear_max)],
+                ["Front video max", fmt(s.cameras?.video?.front_max)]
+            ])}
+
+        ${group("Durability / Build", [
+                ["IP rating", fmt(s.durability?.ip_rating)],
+                ["MIL-STD", fmt(s.durability?.mil_std)],
+                ["Frame material", fmt(s.durability?.frame_material)],
+                ["Glass protection", fmt(s.durability?.protection_glass)]
+            ])}
+
+        ${group("Software", [
+                ["OS at launch", fmt(s.software?.os_at_launch)],
+                ["UI", fmt(s.software?.ui)],
+                ["OS updates (years)", fmt(s.software?.os_updates_years)],
+                ["Security updates (years)", fmt(s.software?.security_updates_years)]
+            ])}
+
+        <div class="section">
+          <div class="sectionTitle">Tests (Experience Layer)</div>
+          <ul class="tests">${tests}</ul>
+        </div>
+      `;
+        }
+
+        function selectPhone(p) {
+            selected = p;
+            renderList();
+            renderDetail(p);
+        }
+
+        // Admin modal (UI only; backend admin endpoints come next step)
+        function openModal(title, bodyHtml) {
+            $("modalTitle").textContent = title;
+            $("modalBody").innerHTML = bodyHtml;
+            $("modal").classList.remove("hidden");
+        }
+        function closeModal() { $("modal").classList.add("hidden"); }
+        $("modalClose").onclick = closeModal;
+        $("modal").onclick = (e) => { if (e.target.id === "modal") closeModal(); };
+
+        $("btnAdmin").onclick = () => {
+            openModal("Admin Mode", `
+        <div class="formRow">
+          <label>Admin Key</label>
+          <input id="key" class="input" placeholder="Enter your ADMIN_KEY" />
+          <div class="muted small">Admin tools will be enabled only in this browser session.</div>
+        </div>
+        <div style="padding:0 12px 12px;">
+          <button id="enable" class="btn">Enable Admin</button>
+        </div>
+      `);
+
+            $("enable").onclick = () => {
+                const key = $("key").value.trim();
+                if (!key) return alert("Enter admin key");
+                adminKey = key;
+                sessionStorage.setItem("adminKey", adminKey);
+                setAdminUI();
+                closeModal();
+                alert("Admin enabled (admin APIs added next step)");
+            };
+        };
+
+        $("btnAdminOff").onclick = () => {
+            adminKey = null;
+            sessionStorage.removeItem("adminKey");
+            setAdminUI();
+            alert("Admin disabled");
+        };
+
+        // search debounce
+        let t = null;
+        $("search").addEventListener("input", () => {
+            clearTimeout(t);
+            t = setTimeout(() => loadPhones($("search").value.trim()), 250);
+        });
+
+        setAdminUI();
+        loadPhones();
+
+        // ---------- ADMIN: copy (admin only) ----------
+        async function copyText(text) {
+            await navigator.clipboard.writeText(text);
+            alert("Copied");
+        }
+
+        function toMarkdown(p) {
+            const s = p.specs || {};
+            const lines = [];
+            lines.push(`# ${p.brand} ${p.model}`);
+            lines.push("");
+            lines.push(`## Variants`);
+            (p.variants || []).forEach(v => {
+                const pr = typeof v.price_inr === "number" ? `₹${v.price_inr.toLocaleString("en-IN")}` : "—";
+                lines.push(`- ${v.label || `${v.ram_gb}GB+${v.storage_gb}GB`}: ${pr} (${fmt(v.ram_type)} / ${fmt(v.storage_type)})`);
+            });
+            lines.push("");
+            lines.push(`| Feature | Value |`);
+            lines.push(`|---|---|`);
+            lines.push(`| Display | ${fmt(s.display?.size_in)}" ${fmt(s.display?.type)} ${fmt(s.display?.resolution_class)} ${fmt(s.display?.refresh_hz)}Hz |`);
+            lines.push(`| Chipset | ${fmt(s.performance?.soc)} |`);
+            lines.push(`| AnTuTu | ${fmtAntutu(s.performance?.antutu)} |`);
+            lines.push(`| Battery | ${fmt(s.battery?.capacity_mah)}mAh ${fmt(s.battery?.wired_charging_w)}W |`);
+            lines.push(`| Durability | ${fmt(s.durability?.ip_rating)} ${s.durability?.mil_std ? `(${s.durability.mil_std})` : ""} |`);
+            lines.push(`| Cameras | Main: ${cameraToText(s.cameras?.rear?.main)}; Tele: ${cameraToText(s.cameras?.rear?.telephoto)}; UW: ${cameraToText(s.cameras?.rear?.ultrawide)} |`);
+            lines.push(`| Video | Rear: ${fmt(s.cameras?.video?.rear_max)} / Front: ${fmt(s.cameras?.video?.front_max)} |`);
+            lines.push(`| Software | ${fmt(s.software?.ui)} (${fmt(s.software?.os_at_launch)}) |`);
+            return lines.join("\n");
+        }
+
+        $("btnCopyJson").onclick = async () => {
+            if (!isAdmin() || !selected) return;
+            await copyText(JSON.stringify(selected, null, 2));
+        };
+
+        $("btnCopyMd").onclick = async () => {
+            if (!isAdmin() || !selected) return;
+            await copyText(toMarkdown(selected));
+        };
+
+        // ---------- ADMIN: JSON editor modal ----------
+        function openJsonEditor(title, initialObj, onSave) {
+            openModal(title, `
+    <div class="muted small" style="padding:12px 12px 0;">
+      Edit the full JSON document. Required: <b>id</b>, <b>brand</b>, <b>model</b>.
+    </div>
+    <textarea id="jsonEditor" class="textarea" spellcheck="false">${JSON.stringify(initialObj, null, 2)}</textarea>
+    <div style="padding:0 12px 12px;">
+      <button id="saveJson" class="btn">Save</button>
+    </div>
+  `);
+
+            $("saveJson").onclick = async () => {
+                try {
+                    const obj = JSON.parse($("jsonEditor").value);
+                    await onSave(obj);
+                    closeModal();
+                    await loadPhones($("search").value.trim());
+                    const updated = phones.find(p => p.id === obj.id);
+                    if (updated) selectPhone(updated);
+                    alert("Saved");
+                } catch (e) {
+                    alert(e.message);
+                }
+            };
+        }
+
+        $("btnNew").onclick = () => {
+            if (!isAdmin()) return;
+            const empty = {
+                id: "PH_BRAND_MODEL",
+                brand: "Brand",
+                model: "Model",
+                release: { status: "released", date: "2026-01-01" },
+                variants: [],
+                specs: {
+                    display: {},
+                    performance: { antutu: {} },
+                    battery: {},
+                    cameras: { rear: { main: {}, ultrawide: {}, telephoto: null }, front: {}, video: {} },
+                    durability: {},
+                    connectivity: {},
+                    software: {},
+                    audio: {},
+                    extras: {}
+                },
+                tests: []
+            };
+
+            openJsonEditor("New Phone (JSON)", empty, async (obj) => {
+                await api("/api/admin/phones", { method: "POST", body: JSON.stringify(obj) });
+            });
+        };
+
+        $("btnEdit").onclick = () => {
+            if (!isAdmin() || !selected) return;
+            openJsonEditor(`Edit: ${selected.brand} ${selected.model}`, selected, async (obj) => {
+                await api(`/api/admin/phones/${encodeURIComponent(obj.id)}`, { method: "PUT", body: JSON.stringify(obj) });
+            });
+        };
+    </script>
+</body>
+
+</html>
