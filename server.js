@@ -1,15 +1,17 @@
 const express = require("express");
 const dotenv = require("dotenv");
-const path = require("path");
+// const path = require("path");
 const { MongoClient } = require("mongodb");
+const cors = require("cors");
 
 dotenv.config();
 
 const app = express();
+app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 // Serve frontend
-app.use(express.static(path.join(__dirname, "public")));
+// app.use(express.static(path.join(__dirname, "public")));
 
 const { MONGODB_URI, DB_NAME = "techscr", PORT = 3000 } = process.env;
 
